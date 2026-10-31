@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Google: Clean Web Results
 // @namespace    https://github.com/drochf/search-filter
-// @version      2.1
+// @version      2.2
 // @description  Forces Google into "Web" mode (udm=14) and hides everything that is not an ordinary result: AI overviews, ads, images, videos, maps, news, "People also ask", related searches. Also hides results from news websites, and replaces Google's tab bar with All / Web / Images / Maps.
 // @match        https://www.google.com/search*
 // @match        https://google.com/search*
@@ -141,9 +141,36 @@
         // Ukraine / Russia war coverage
         "kyivindependent.com", "kyivpost.com", "pravda.com.ua", "ukrinform.net", "meduza.io",
         "themoscowtimes.com", "understandingwar.org", "liveuamap.com",
+        // Middle East coverage
+        "middleeasteye.net", "middleeastmonitor.com", "al-monitor.com", "arabnews.com",
+        "thenationalnews.com", "alarabiya.net", "trtworld.com", "aa.com.tr", "presstv.ir",
+        "electronicintifada.net", "mondoweiss.net", "972mag.com", "palestinechronicle.com",
+        "ynetnews.com", "i24news.tv", "jewishinsider.com", "jns.org",
+        // Current-affairs magazines and commentary
+        "foreignaffairs.com", "foreignpolicy.com", "spectator.co.uk", "spectator.com",
+        "newstatesman.com", "project-syndicate.org", "theconversation.com", "unherd.com",
+        "prospectmagazine.co.uk", "responsiblestatecraft.org", "thediplomat.com", "warontherocks.com",
     ];
     // "3 hours ago", "2 days ago" etc. in a result means it is fresh, i.e. news.
     const FRESH = /\b\d+\s+(?:minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago\b/i;
+    // After about a week Google shows a calendar date instead ("Oct 8, 2026" or
+    // "8 Oct 2026"). Treat anything dated within RECENT_DAYS as news too.
+    // Longer windows start catching review/how-to pages that re-date themselves.
+    const RECENT_DAYS = 30;
+    const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const MON = "(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?";
+    const DATE = new RegExp(`\\b(?:${MON}\\s+(\\d{1,2}),?\\s+(\\d{4})|(\\d{1,2})\\s+${MON},?\\s+(\\d{4}))\\b`, "gi");
+
+    function isRecent(text) {
+        if (FRESH.test(text)) return true;
+        for (const m of text.matchAll(DATE)) {
+            const month = MONTHS.indexOf((m[1] || m[5]).toLowerCase());
+            const date = new Date(Number(m[3] || m[6]), month, Number(m[2] || m[4]));
+            const ageDays = (Date.now() - date) / 864e5;
+            if (ageDays > -2 && ageDays < RECENT_DAYS) return true;   // ignore future dates
+        }
+        return false;
+    }
 
     function isNews(el, link) {
         let u;
@@ -158,7 +185,7 @@
         const title = link.querySelector('h3, [role="heading"]');
         const label = link.innerText.replace(title ? title.innerText : "", "");
         if (/\bnews/i.test(label)) return true;
-        return FRESH.test(el.innerText);
+        return isRecent(el.innerText);
     }
 
     // ---- 5. Structural pass over the results list -----------------------
