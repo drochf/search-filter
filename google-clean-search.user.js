@@ -1,14 +1,18 @@
 // ==UserScript==
 // @name         Google: Clean Web Results
 // @namespace    https://github.com/drochf/search-filter
-// @version      2.2
-// @description  Forces Google into "Web" mode (udm=14) and hides everything that is not an ordinary result: AI overviews, ads, images, videos, maps, news, "People also ask", related searches. Also hides results from news websites, and replaces Google's tab bar with All / Web / Images / Maps.
+// @version      3.0
+// @description  Forces Google into "Web" mode (udm=14) and hides everything that is not an ordinary result: AI overviews, ads, images, videos, maps, news, "People also ask", related searches. Also hides results from the sites in blocked-sites.txt and anything recently dated, and replaces Google's tab bar with All / Web / Images / Maps.
 // @match        https://www.google.com/search*
 // @match        https://google.com/search*
 // @match        https://www.google.ca/search*
 // @match        https://google.ca/search*
 // @downloadURL  https://raw.githubusercontent.com/drochf/search-filter/main/google-clean-search.user.js
 // @updateURL    https://raw.githubusercontent.com/drochf/search-filter/main/google-clean-search.user.js
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @connect      raw.githubusercontent.com
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
@@ -107,50 +111,35 @@
     addEventListener("resize", alignTabs);
 
     // ---- 4. News results -------------------------------------------------
-    const NEWS_DOMAINS = [
-        // International / wire
-        "reuters.com", "apnews.com", "aljazeera.com", "aljazeera.net", "bbc.com", "bbc.co.uk",
-        "dw.com", "france24.com", "euronews.com", "rt.com", "tass.com", "afp.com",
-        "news.google.com", "news.yahoo.com", "msn.com", "newsnow.co.uk", "newsnow.com",
-        "wikinews.org", "semafor.com", "axios.com",
-        // US
-        "cnn.com", "nytimes.com", "washingtonpost.com", "wsj.com", "foxnews.com", "foxbusiness.com",
-        "nbcnews.com", "cbsnews.com", "abcnews.go.com", "abcnews.com", "npr.org", "pbs.org",
-        "msnbc.com", "cnbc.com", "bloomberg.com", "politico.com", "thehill.com", "usatoday.com",
-        "latimes.com", "nypost.com", "time.com", "newsweek.com", "theatlantic.com", "newyorker.com",
-        "vox.com", "huffpost.com", "businessinsider.com", "insider.com", "thedailybeast.com",
-        "slate.com", "salon.com", "motherjones.com", "theintercept.com", "propublica.org",
-        "breitbart.com", "dailywire.com", "theblaze.com", "newsmax.com", "oann.com",
-        "washingtonexaminer.com", "washingtontimes.com", "nationalreview.com", "newrepublic.com",
-        "thenation.com", "realclearpolitics.com", "realclearworld.com", "rollingstone.com",
-        "chicagotribune.com", "bostonglobe.com", "sfchronicle.com", "nbcnews.com", "upi.com",
-        // UK / Ireland
-        "theguardian.com", "independent.co.uk", "telegraph.co.uk", "dailymail.co.uk", "thesun.co.uk",
-        "mirror.co.uk", "express.co.uk", "thetimes.co.uk", "thetimes.com", "news.sky.com", "ft.com",
-        "economist.com", "standard.co.uk", "metro.co.uk", "inews.co.uk", "huffingtonpost.co.uk",
-        "politico.eu", "gbnews.com", "lbc.co.uk", "irishtimes.com", "rte.ie", "independent.ie",
-        // Canada
-        "cbc.ca", "ctvnews.ca", "globalnews.ca", "theglobeandmail.com", "nationalpost.com",
-        "thestar.com", "torontosun.com", "cp24.com", "citynews.ca", "macleans.ca",
-        "ottawacitizen.com", "montrealgazette.com", "vancouversun.com", "thecanadianpress.com",
-        "lapresse.ca", "ledevoir.com", "radio-canada.ca", "thetyee.ca", "canadaland.com",
-        // Australia / Asia / Middle East
-        "abc.net.au", "smh.com.au", "theage.com.au", "news.com.au", "scmp.com", "indiatimes.com",
-        "hindustantimes.com", "ndtv.com", "thehindu.com", "haaretz.com", "timesofisrael.com",
-        "jpost.com", "straitstimes.com", "japantimes.co.jp",
-        // Ukraine / Russia war coverage
-        "kyivindependent.com", "kyivpost.com", "pravda.com.ua", "ukrinform.net", "meduza.io",
-        "themoscowtimes.com", "understandingwar.org", "liveuamap.com",
-        // Middle East coverage
-        "middleeasteye.net", "middleeastmonitor.com", "al-monitor.com", "arabnews.com",
-        "thenationalnews.com", "alarabiya.net", "trtworld.com", "aa.com.tr", "presstv.ir",
-        "electronicintifada.net", "mondoweiss.net", "972mag.com", "palestinechronicle.com",
-        "ynetnews.com", "i24news.tv", "jewishinsider.com", "jns.org",
-        // Current-affairs magazines and commentary
-        "foreignaffairs.com", "foreignpolicy.com", "spectator.co.uk", "spectator.com",
-        "newstatesman.com", "project-syndicate.org", "theconversation.com", "unherd.com",
-        "prospectmagazine.co.uk", "responsiblestatecraft.org", "thediplomat.com", "warontherocks.com",
-    ];
+    // Blocked sites live in blocked-sites.txt in the GitHub repo. Violentmonkey
+    // keeps a copy and refreshes it every few hours, so editing the file on
+    // GitHub is enough; if GitHub can't be reached the last copy is used.
+    const SITES_URL = "https://raw.githubusercontent.com/drochf/search-filter/main/blocked-sites.txt";
+    const SITES_MAX_AGE = 3 * 3600e3;
+    let blockedSites = GM_getValue("blockedSites", []);
+
+    // One site per line, "#" starts a note; full links are cut down to the site.
+    function parseSites(text) {
+        return text.split("\n")
+            .map(line => line.replace(/#.*/, "").trim().toLowerCase())
+            .map(s => s.replace(/^[a-z]+:\/\//, "").replace(/[\/?:].*$/, "").replace(/^www\./, ""))
+            .filter(Boolean);
+    }
+
+    if (Date.now() - GM_getValue("blockedSitesFetched", 0) > SITES_MAX_AGE) {
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: SITES_URL + "?t=" + Date.now(),       // skip GitHub's 5-minute cache
+            onload(res) {
+                if (res.status !== 200) return;
+                blockedSites = parseSites(res.responseText);
+                GM_setValue("blockedSites", blockedSites);
+                GM_setValue("blockedSitesFetched", Date.now());
+                schedule();
+            },
+        });
+    }
+
     // "3 hours ago", "2 days ago" etc. in a result means it is fresh, i.e. news.
     const FRESH = /\b\d+\s+(?:minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago\b/i;
     // After about a week Google shows a calendar date instead ("Oct 8, 2026" or
@@ -179,7 +168,7 @@
             try { u = new URL(u.searchParams.get("q") || u.searchParams.get("url")); } catch (e) { return false; }
         }
         const host = u.hostname.replace(/^www\./, "");
-        if (NEWS_DOMAINS.some(d => host === d || host.endsWith("." + d))) return true;
+        if (blockedSites.some(d => host === d || host.endsWith("." + d))) return true;
         if (/\/news(\/|$)/i.test(u.pathname)) return true;
         // Site name and breadcrumb shown with the title, e.g. "YouTube · BBC News"
         const title = link.querySelector('h3, [role="heading"]');
