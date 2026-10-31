@@ -1,12 +1,18 @@
 // ==UserScript==
 // @name         Google: Clean Web Results
 // @namespace    https://github.com/drochf/search-filter
-// @version      3.0
+// @version      3.1
 // @description  Forces Google into "Web" mode (udm=14) and hides everything that is not an ordinary result: AI overviews, ads, images, videos, maps, news, "People also ask", related searches. Also hides results from the sites in blocked-sites.txt and anything recently dated, and replaces Google's tab bar with All / Web / Images / Maps.
 // @match        https://www.google.com/search*
 // @match        https://google.com/search*
 // @match        https://www.google.ca/search*
 // @match        https://google.ca/search*
+// @match        https://www.google.com/
+// @match        https://www.google.com/?*
+// @match        https://www.google.com/webhp*
+// @match        https://www.google.ca/
+// @match        https://www.google.ca/?*
+// @match        https://www.google.ca/webhp*
 // @downloadURL  https://raw.githubusercontent.com/drochf/search-filter/main/google-clean-search.user.js
 // @updateURL    https://raw.githubusercontent.com/drochf/search-filter/main/google-clean-search.user.js
 // @grant        GM_xmlhttpRequest
@@ -19,6 +25,39 @@
 
 (function () {
     "use strict";
+
+    // ---- 0. Search suggestions (every page, homepage included) ----------
+    // The dropdown under the search box ("ukraine war news", trending searches)
+    // is hidden, and the arrow keys can't step through it into the box.
+    const suggestStyle = document.createElement("style");
+    suggestStyle.textContent = `form [role="listbox"] { display: none !important; }`;
+    document.documentElement.appendChild(suggestStyle);
+
+    addEventListener("keydown", e => {
+        if ((e.key === "ArrowDown" || e.key === "ArrowUp") && e.target.matches?.('form [name="q"]')) {
+            e.stopImmediatePropagation();
+        }
+    }, true);
+
+    // The panel around the list (with its "Report inappropriate predictions"
+    // line) is the list's outermost ancestor that doesn't hold the search box.
+    function hideSuggestPanel() {
+        for (const list of document.querySelectorAll('form [role="listbox"]')) {
+            let panel = list;
+            while (panel.parentElement && !panel.parentElement.querySelector('[name="q"]')) {
+                panel = panel.parentElement;
+            }
+            panel.style.display = "none";
+        }
+    }
+
+    if (location.pathname !== "/search") {
+        new MutationObserver(hideSuggestPanel).observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+        });
+        return;
+    }
 
     // ---- 1. Pick the mode ------------------------------------------------
     // Default is Web mode. News, AI Mode and video tabs are sent to Web too.
@@ -222,6 +261,7 @@
     }
 
     function clean() {
+        hideSuggestPanel();
         addTabs();
         alignTabs();
         if (!pruneResults) return;
