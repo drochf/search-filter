@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Google: Clean Web Results
 // @namespace    https://github.com/drochf/search-filter
-// @version      3.1
+// @version      3.2
 // @description  Forces Google into "Web" mode (udm=14) and hides everything that is not an ordinary result: AI overviews, ads, images, videos, maps, news, "People also ask", related searches. Also hides results from the sites in blocked-sites.txt and anything recently dated, and replaces Google's tab bar with All / Web / Images / Maps.
 // @match        https://www.google.com/search*
 // @match        https://google.com/search*
@@ -107,8 +107,12 @@
         #bres,                              /* related searches */
         g-scrolling-carousel, video-voyager, g-section-with-header, g-map,
         [data-news-cluster-id], [data-local-attribute],
+        #rso table[role="group"],           /* sitelinks, "More results from ..." */
         #rso img                            /* all thumbnails and favicons */
         { display: none !important; }
+
+        /* Breathing room between the line under the tabs and the first result */
+        #rso { margin-top: 24px !important; }
     ` : "");
     document.documentElement.appendChild(style);
 
