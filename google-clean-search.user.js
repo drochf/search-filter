@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Google: Clean Web Results
 // @namespace    https://github.com/drochf/search-filter
-// @version      3.2
+// @version      3.3
 // @description  Forces Google into "Web" mode (udm=14) and hides everything that is not an ordinary result: AI overviews, ads, images, videos, maps, news, "People also ask", related searches. Also hides results from the sites in blocked-sites.txt and anything recently dated, and replaces Google's tab bar with All / Web / Images / Maps.
 // @match        https://www.google.com/search*
 // @match        https://google.com/search*
@@ -18,6 +18,9 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM.xmlHttpRequest
+// @grant        GM.getValue
+// @grant        GM.setValue
 // @connect      raw.githubusercontent.com
 // @run-at       document-start
 // @noframes
@@ -159,7 +162,7 @@
     // GitHub is enough; if GitHub can't be reached the last copy is used.
     const SITES_URL = "https://raw.githubusercontent.com/drochf/search-filter/main/blocked-sites.txt";
     const SITES_MAX_AGE = 3 * 3600e3;
-    let blockedSites = GM_getValue("blockedSites", []);
+    let blockedSites = [];
 
     // One site per line, "#" starts a note; full links are cut down to the site.
     function parseSites(text) {
@@ -169,19 +172,52 @@
             .filter(Boolean);
     }
 
-    if (Date.now() - GM_getValue("blockedSitesFetched", 0) > SITES_MAX_AGE) {
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: SITES_URL + "?t=" + Date.now(),       // skip GitHub's 5-minute cache
-            onload(res) {
-                if (res.status !== 200) return;
-                blockedSites = parseSites(res.responseText);
-                GM_setValue("blockedSites", blockedSites);
-                GM_setValue("blockedSitesFetched", Date.now());
-                schedule();
-            },
-        });
+    // Script managers differ: Violentmonkey has GM_getValue, Safari's
+    // Userscripts app only has the promise-based GM.getValue. Use whichever
+    // exists, and the page's own localStorage if neither does.
+    const gm = typeof GM === "object" ? GM : {};
+
+    async function load(key, fallback) {
+        try {
+            if (gm.getValue) return await gm.getValue(key, fallback);
+            if (typeof GM_getValue === "function") return GM_getValue(key, fallback);
+            const v = localStorage.getItem("cleanSearch:" + key);
+            return v === null ? fallback : JSON.parse(v);
+        } catch (e) { return fallback; }
     }
+
+    async function save(key, value) {
+        try {
+            if (gm.setValue) return await gm.setValue(key, value);
+            if (typeof GM_setValue === "function") return GM_setValue(key, value);
+            localStorage.setItem("cleanSearch:" + key, JSON.stringify(value));
+        } catch (e) {}
+    }
+
+    // raw.githubusercontent.com allows cross-site requests, so plain fetch
+    // works when the manager has no request function.
+    function download(url) {
+        const xhr = gm.xmlHttpRequest || (typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null);
+        if (!xhr) return fetch(url).then(r => r.ok ? r.text() : Promise.reject(r.status));
+        return new Promise((resolve, reject) => xhr({
+            method: "GET",
+            url,
+            onload: res => res.status === 200 ? resolve(res.responseText) : reject(res.status),
+            onerror: reject,
+        }));
+    }
+
+    (async () => {
+        blockedSites = await load("blockedSites", []);
+        schedule();
+        if (Date.now() - await load("blockedSitesFetched", 0) <= SITES_MAX_AGE && blockedSites.length) return;
+        try {
+            blockedSites = parseSites(await download(SITES_URL + "?t=" + Date.now()));   // skip GitHub's 5-minute cache
+            schedule();
+            await save("blockedSites", blockedSites);
+            await save("blockedSitesFetched", Date.now());
+        } catch (e) {}
+    })();
 
     // "3 hours ago", "2 days ago" etc. in a result means it is fresh, i.e. news.
     const FRESH = /\b\d+\s+(?:minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago\b/i;
@@ -204,18 +240,35 @@
         return false;
     }
 
+    // Where the result really goes. On phones Google links through /goto with
+    // an opaque token, so fall back to the address printed under the site name.
+    function destination(link, label) {
+        try {
+            let u = new URL(link.href);
+            if (u.pathname === "/url") u = new URL(u.searchParams.get("q") || u.searchParams.get("url"));
+            if (!/(^|\.)google\.[a-z.]+$/.test(u.hostname)) return u;
+        } catch (e) {}
+        const shown = label.match(/https?:\/\/[^\s›]+/);
+        try { return shown ? new URL(shown[0]) : null; } catch (e) { return null; }
+    }
+
+    const squash = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
     function isNews(el, link) {
-        let u;
-        try { u = new URL(link.href); } catch (e) { return false; }
-        if (u.pathname === "/url") {
-            try { u = new URL(u.searchParams.get("q") || u.searchParams.get("url")); } catch (e) { return false; }
-        }
-        const host = u.hostname.replace(/^www\./, "");
-        if (blockedSites.some(d => host === d || host.endsWith("." + d))) return true;
-        if (/\/news(\/|$)/i.test(u.pathname)) return true;
         // Site name and breadcrumb shown with the title, e.g. "YouTube · BBC News"
         const title = link.querySelector('h3, [role="heading"]');
         const label = link.innerText.replace(title ? title.innerText : "", "");
+        const u = destination(link, label);
+        if (u) {
+            const host = u.hostname.replace(/^www\./, "");
+            if (blockedSites.some(d => host === d || host.endsWith("." + d))) return true;
+            if (/\/news(\/|$)/i.test(u.pathname)) return true;
+        } else {
+            // No address at all (phone layout for social media posts): compare
+            // the site name, e.g. "Facebook" or "Al Jazeera", with the block list.
+            const site = squash(label.trim().split(/\s*[·\n]\s*/)[0] || "");
+            if (site && blockedSites.some(d => squash(d.split(".")[0]) === site)) return true;
+        }
         if (/\bnews/i.test(label)) return true;
         return isRecent(el.innerText);
     }
@@ -264,13 +317,17 @@
         [...el.children].forEach(prune);                   // plain wrapper: judge each child
     }
 
+    // Each step is guarded so a layout Google changed (or a phone layout we
+    // haven't seen) can't stop the results from being filtered.
+    const attempt = fn => { try { fn(); } catch (e) { console.warn("Clean search:", e); } };
+
     function clean() {
-        hideSuggestPanel();
-        addTabs();
-        alignTabs();
+        attempt(hideSuggestPanel);
+        attempt(addTabs);
+        attempt(alignTabs);
         if (!pruneResults) return;
         const root = document.getElementById("rso");
-        if (root) [...root.children].forEach(prune);
+        if (root) [...root.children].forEach(el => attempt(() => prune(el)));
     }
 
     let queued = false;
